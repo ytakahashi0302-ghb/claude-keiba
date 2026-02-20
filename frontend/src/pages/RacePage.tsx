@@ -74,9 +74,9 @@ function getEVComment(horse: Horse, horses: Horse[]): string {
     else if (wc < -2)              factors.push('体重減');
   }
 
-  // 枠番
-  if ((horse.gate_number ?? 0) <= 2)       factors.push('内枠有利');
-  else if ((horse.gate_number ?? 0) >= 7)  factors.push('外枠不利');
+  // 枠番（gate_number が設定されている場合のみ）
+  if (horse.gate_number && horse.gate_number <= 2)      factors.push('内枠有利');
+  else if (horse.gate_number && horse.gate_number >= 7) factors.push('外枠不利');
 
   // 人気順 vs モデル順のズレ
   if (horse.popularity && horse.win_probability != null) {
