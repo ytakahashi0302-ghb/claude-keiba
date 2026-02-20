@@ -12,12 +12,10 @@ from typing import List, Dict, Optional
 import requests
 from bs4 import BeautifulSoup
 
+from scrapers._headers import BROWSER_HEADERS
+
 
 HORSE_URL = "https://db.netkeiba.com/horse/{horse_id}/"
-
-_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-}
 
 # モジュールレベルキャッシュ（セッション中に同じ馬を重複取得しない）
 _CACHE: Dict[str, List[dict]] = {}
@@ -43,7 +41,10 @@ def get_horse_history(horse_id: str, n_races: int = 5) -> List[dict]:
 
     try:
         url = HORSE_URL.format(horse_id=horse_id)
-        resp = requests.get(url, timeout=12, headers=_HEADERS)
+        resp = requests.get(url, timeout=15, headers={
+            **BROWSER_HEADERS,
+            "Referer": "https://db.netkeiba.com/",
+        })
         resp.encoding = resp.apparent_encoding or "euc-jp"
 
         if resp.status_code != 200:

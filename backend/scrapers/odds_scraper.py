@@ -10,6 +10,8 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 
+from scrapers._headers import BROWSER_HEADERS, API_HEADERS
+
 
 # 出馬表ページ
 SHUTUBA_URL = "https://race.netkeiba.com/race/shutuba.html"
@@ -56,8 +58,9 @@ def _fetch_horses(race_id: str) -> List[dict]:
 
     try:
         url = f"{SHUTUBA_URL}?race_id={race_id}"
-        resp = requests.get(url, timeout=10, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        resp = requests.get(url, timeout=15, headers={
+            **BROWSER_HEADERS,
+            "Referer": "https://race.netkeiba.com/top/",
         })
         resp.encoding = resp.apparent_encoding or "euc-jp"
 
@@ -189,8 +192,8 @@ def _fetch_odds(race_id: str) -> dict:
             "pid": "api_get_jra_odds",
             "input": "UTF-8",
         }
-        resp = requests.get(ODDS_API_URL, params=params, timeout=10, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        resp = requests.get(ODDS_API_URL, params=params, timeout=15, headers={
+            **API_HEADERS,
             "Referer": f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}",
         })
 

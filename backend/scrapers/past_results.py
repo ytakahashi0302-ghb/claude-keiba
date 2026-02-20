@@ -11,6 +11,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from calculators.expected_value import calculate_expected_values
+from scrapers._headers import BROWSER_HEADERS
 
 
 RACE_LIST_URL = "https://race.netkeiba.com/top/race_list_sub.html"
@@ -22,9 +23,7 @@ VENUE_CODE_MAP = {
     "09": "阪神", "10": "小倉",
 }
 
-_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-}
+_HEADERS = {**BROWSER_HEADERS, "Referer": "https://race.netkeiba.com/top/"}
 
 
 def get_past_races(days: int = 14) -> List[dict]:

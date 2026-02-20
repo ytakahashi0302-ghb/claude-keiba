@@ -10,6 +10,8 @@ from typing import List
 import requests
 from bs4 import BeautifulSoup
 
+from scrapers._headers import BROWSER_HEADERS
+
 
 # netkeiba.comのレース一覧ページ
 RACE_LIST_URL = "https://race.netkeiba.com/top/race_list_sub.html"
@@ -55,8 +57,9 @@ def _fetch_races_for_date(date_str: str) -> List[dict]:
 
     try:
         url = f"{RACE_LIST_URL}?kaisai_date={date_str}"
-        resp = requests.get(url, timeout=10, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        resp = requests.get(url, timeout=15, headers={
+            **BROWSER_HEADERS,
+            "Referer": "https://race.netkeiba.com/top/",
         })
         resp.encoding = resp.apparent_encoding or "euc-jp"
 

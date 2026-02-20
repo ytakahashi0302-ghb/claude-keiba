@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run build:*)",
+      "Bash(npx --yes vite build:*)",
+      "Bash(node_modules/.bin/vite:*)",
+      "Bash(git remote:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git config:*)",
+      "Bash(gh auth status:*)",
+      "Bash(ssh-add:*)",
+      "Bash(railway status:*)"
+    ]
+  }
+}
