@@ -99,11 +99,15 @@ def optimize_bets(req: OptimizeRequest):
     horses = get_horses_with_odds(req.race_id)
     if not horses:
         raise HTTPException(status_code=404, detail="Race not found")
-    bets = optimize_budget(horses, req.budget)
-    total_expected = sum(b["expected_return"] for b in bets)
+    # 100円単位に丸める
+    budget = max(100, round(req.budget / 100) * 100)
+    result = optimize_budget(horses, budget)
     return {
         "race_id": req.race_id,
-        "budget": req.budget,
-        "bets": bets,
-        "expected_return": round(total_expected, 2),
+        "budget": budget,
+        "bets": result["bets"],
+        "total_bet": result["total_bet"],
+        "guaranteed_return": result["guaranteed_return"],
+        "remaining_budget": result["remaining_budget"],
+        "coverage": result["coverage"],
     }

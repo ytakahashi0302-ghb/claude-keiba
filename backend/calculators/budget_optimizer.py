@@ -1,78 +1,106 @@
 """予算最適化モジュール
 
-ケリー基準に基づき、各馬への最適なベット配分を算出する。
+ダッチベッティング戦略:
+  選択した馬のどれが勝っても「リターン ≥ 投資合計」となるよう配分する。
+
+アルゴリズム:
+  1. 馬を勝率降順に並べ、以下の条件を満たす限り選択に追加する:
+       Σ(1/odds_i) + k×100/budget ≤ 1.0   … (k = 追加後の馬数)
+     これにより100円単位の切り上げ丸め誤差を考慮した利益の余白が確保される。
+  2. bet_i = ceil(budget / odds_i / 100) × 100  (切り上げ)
+     → 任意の的中馬について  bet_i × odds_i ≥ budget ≥ total_bet  が成立
+  3. guaranteed_return = min(bet_i × odds_i) ≥ budget ≥ total_bet  → 利益確定
 """
 
+import math
 from typing import List
 
 from calculators.expected_value import calculate_expected_values
 
 
-def optimize_budget(horses: List[dict], budget: int) -> List[dict]:
-    """ケリー基準による予算最適配分を算出する。
+def optimize_budget(horses: List[dict], budget: int) -> dict:
+    """ダッチベッティングによる予算最適配分を算出する。
 
     Args:
-        horses: 馬情報のリスト。各要素に odds_win (単勝オッズ) が必須。
-        budget: 総予算（円）。
+        horses: 馬情報のリスト。各要素に odds_win が必須。
+        budget: 総予算（100円単位）。
 
     Returns:
-        各馬の推奨ベット額と期待リターンを含むリスト。
-        各要素: {horse_id, horse_name, recommended_bet, expected_return, kelly_fraction}
+        {bets, total_bet, guaranteed_return, remaining_budget, coverage}
     """
-    if not horses or budget <= 0:
-        return []
+    empty = {"bets": [], "total_bet": 0, "guaranteed_return": 0,
+             "remaining_budget": budget, "coverage": 0.0}
 
-    # 期待値を算出
+    if not horses or budget <= 0:
+        return empty
+
+    # 期待値・勝率を算出
     horses_with_ev = calculate_expected_values(horses)
 
-    # ケリー比率を計算
-    kelly_entries = []
-    for horse in horses_with_ev:
+    # オッズ 1.0 超の馬のみ対象（控除率で1倍以下はありえないが念のため）
+    valid = [h for h in horses_with_ev if h.get("odds_win", 0) > 1.0]
+    if not valid:
+        return empty
+
+    # 勝率降順でソート
+    valid.sort(key=lambda h: h.get("win_probability", 0), reverse=True)
+
+    # ── ダッチ対象馬を選択 ──────────────────────────────────────────
+    # 条件: inv_sum + 1/o_i + (k+1)×100/budget ≤ 1.0
+    #   → budget×(1 - Σ(1/o_j)) ≥ k×100  (切り上げ丸め誤差の余白を保証)
+    selected: List[dict] = []
+    inv_sum = 0.0
+    for horse in valid:
+        k_after = len(selected) + 1
+        rounding_margin = k_after * 100 / budget
+        inv = 1.0 / horse["odds_win"]
+        if inv_sum + inv + rounding_margin <= 1.0:
+            selected.append(horse)
+            inv_sum += inv
+
+    # 1頭も選べない場合（予算が小さすぎる等）は勝率1位のみ
+    if not selected:
+        selected = [valid[0]]
+
+    # ── 賭け金を計算 (切り上げ: bet_i × odds_i ≥ budget を保証) ──────
+    bets = []
+    total_bet = 0
+    for horse in selected:
         odds = horse["odds_win"]
-        p = horse["win_probability"]
-        q = 1.0 - p
-        b = odds - 1.0  # 純利益倍率
+        wp = horse.get("win_probability", 0.0)
 
-        if b <= 0:
-            kelly_fraction = 0.0
-        else:
-            kelly_fraction = (b * p - q) / b
+        bet = max(100, math.ceil(budget / odds / 100) * 100)
+        total_bet += bet
 
-        # 期待値がマイナスの馬はベットしない
-        if kelly_fraction <= 0:
-            kelly_fraction = 0.0
+        if_wins = round(bet * odds)
+        expected = round(bet * odds * wp, 2)
 
-        # ハーフケリー（過大投資を防ぐ）
-        half_kelly = 0.5 * kelly_fraction
-
-        kelly_entries.append({
-            "horse": horse,
-            "kelly_fraction": kelly_fraction,
-            "half_kelly": half_kelly,
-        })
-
-    # ハーフケリー比率の合計で正規化し、予算内に収める
-    total_half_kelly = sum(e["half_kelly"] for e in kelly_entries)
-
-    results = []
-    for entry in kelly_entries:
-        horse = entry["horse"]
-        half_kelly = entry["half_kelly"]
-
-        if total_half_kelly > 0 and half_kelly > 0:
-            allocation_ratio = half_kelly / total_half_kelly
-            recommended_bet = int(budget * allocation_ratio)
-        else:
-            recommended_bet = 0
-
-        expected_return = recommended_bet * horse["odds_win"] * horse["win_probability"]
-
-        results.append({
+        bets.append({
             "horse_id": horse.get("horse_id", ""),
             "horse_name": horse.get("horse_name", ""),
-            "recommended_bet": recommended_bet,
-            "expected_return": round(expected_return, 2),
-            "kelly_fraction": round(entry["kelly_fraction"], 6),
+            "recommended_bet": bet,
+            "if_wins_return": if_wins,
+            "expected_return": expected,
+            "odds_win": odds,
+            "win_probability": round(wp, 4),
         })
 
-    return results
+    remaining = max(0, budget - total_bet)
+
+    # guaranteed_return = 選択馬が的中した場合の最低リターン
+    # (ceil構成により guaranteed_return ≥ budget ≥ total_bet)
+    guaranteed_return = min(b["if_wins_return"] for b in bets) if bets else 0
+
+    # coverage = 選択馬のいずれかが勝つ推定確率
+    no_win_prob = 1.0
+    for horse in selected:
+        no_win_prob *= max(0.0, 1.0 - horse.get("win_probability", 0.0))
+    coverage = round(1.0 - no_win_prob, 4)
+
+    return {
+        "bets": bets,
+        "total_bet": total_bet,
+        "guaranteed_return": guaranteed_return,
+        "remaining_budget": remaining,
+        "coverage": coverage,
+    }

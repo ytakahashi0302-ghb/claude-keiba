@@ -13,8 +13,8 @@ from bs4 import BeautifulSoup
 
 # 出馬表ページ
 SHUTUBA_URL = "https://race.netkeiba.com/race/shutuba.html"
-# 単勝オッズページ
-ODDS_WIN_URL = "https://race.netkeiba.com/odds/index.html"
+# オッズAPIエンドポイント（base64+zlib圧縮JSONを返す）
+ODDS_API_URL = "https://race.netkeiba.com/api/api_get_jra_odds.html"
 
 
 def get_horses_with_odds(race_id: str) -> List[dict]:
@@ -45,6 +45,7 @@ def get_horses_with_odds(race_id: str) -> List[dict]:
             if num in odds_data:
                 horse["odds_win"] = odds_data[num].get("odds_win", 0.0)
                 horse["odds_place"] = odds_data[num].get("odds_place", 0.0)
+                horse["popularity"] = odds_data[num].get("popularity", 0)
 
     return horses
 
@@ -83,49 +84,57 @@ def _fetch_horses(race_id: str) -> List[dict]:
 
         for i, row in enumerate(rows):
             try:
-                # 馬番（JavaScript描画のため空の場合はインデックスで代替）
-                horse_number_td = row.find("td", class_="Umaban")
-                horse_number_text = horse_number_td.get_text(strip=True) if horse_number_td else ""
-                try:
-                    horse_number = int(horse_number_text)
-                except ValueError:
-                    horse_number = i + 1
+                # 枠番: td自体のクラスが Waku1, Waku2, ... の形式
+                gate_number = 0
+                for td in row.find_all("td"):
+                    for cls in td.get("class", []):
+                        m = re.match(r"^Waku(\d)$", cls)
+                        if m:
+                            gate_number = int(m.group(1))
+                            break
+                    if gate_number:
+                        break
 
-                # 馬名・馬ID
-                horse_name_tag = row.find("span", class_="HorseName")
-                horse_name = horse_name_tag.get_text(strip=True) if horse_name_tag else ""
+                # 馬番: td自体のクラスが Umaban1, Umaban2, ... の形式
+                horse_number = i + 1
+                for td in row.find_all("td"):
+                    for cls in td.get("class", []):
+                        if re.match(r"^Umaban\d+$", cls):
+                            try:
+                                horse_number = int(td.get_text(strip=True))
+                            except ValueError:
+                                pass
+                            break
+
+                # 馬名・馬ID（HorseInfo > span.HorseName > a）
+                horse_name = ""
                 horse_id = ""
-                horse_link = row.find("a", href=re.compile(r"/horse/"))
-                if horse_link:
-                    id_match = re.search(r"/horse/(\d+)", horse_link["href"])
-                    if id_match:
-                        horse_id = id_match.group(1)
+                info_td = row.find("td", class_="HorseInfo")
+                if info_td:
+                    name_span = info_td.find("span", class_="HorseName")
+                    horse_link = (name_span or info_td).find("a", href=re.compile(r"/horse/"))
+                    if horse_link:
+                        horse_name = horse_link.get_text(strip=True)
+                        m = re.search(r"/horse/(\d+)", horse_link["href"])
+                        if m:
+                            horse_id = m.group(1)
 
                 # 騎手名
                 jockey_tag = row.find("a", href=re.compile(r"/jockey/"))
                 jockey = jockey_tag.get_text(strip=True) if jockey_tag else ""
 
-                # 斤量
-                weight_td = row.find("td", class_="Barei")
-                weight_text = weight_td.get_text(strip=True) if weight_td else "0"
-                try:
-                    weight = float(re.search(r"[\d.]+", weight_text).group())
-                except (AttributeError, ValueError):
-                    weight = 0.0
+                # 斤量: td.Barei は「性齢」(例:牝3)、斤量はその次のtd
+                weight = 0.0
+                barei_td = row.find("td", class_="Barei")
+                if barei_td:
+                    next_td = barei_td.find_next_sibling("td")
+                    if next_td:
+                        try:
+                            weight = float(next_td.get_text(strip=True))
+                        except ValueError:
+                            pass
 
-                # 枠番（gate number 1-8）
-                gate_number = 0
-                waku_td = row.find("td", class_="Waku")
-                if waku_td:
-                    waku_span = waku_td.find("span")
-                    if waku_span:
-                        for cls in waku_span.get("class", []):
-                            m = re.match(r"Waku(\d)", cls)
-                            if m:
-                                gate_number = int(m.group(1))
-                                break
-
-                # 馬体重と変化（例: "480(-4)"）
+                # 馬体重と変化（例: "480(-4)"）出走前は空の場合あり
                 body_weight = 0
                 weight_change = None
                 bw_td = row.find("td", class_="Weight")
@@ -161,37 +170,56 @@ def _fetch_horses(race_id: str) -> List[dict]:
 
 
 def _fetch_odds(race_id: str) -> dict:
-    """単勝・複勝オッズを取得する。馬番をキーとした辞書を返す。"""
+    """単勝オッズをAPIから取得する。馬番をキーとした辞書を返す。
+
+    netkeiba.comのオッズはJavaScript経由でAJAX取得されるため、
+    HTMLページではなくAPIエンドポイントを直接叩く。
+    必須パラメータ: type=1, action=init, pid=api_get_jra_odds
+    レスポンスの data フィールドは JSON オブジェクトとして返される。
+    """
     odds_data = {}
 
     try:
-        url = f"{ODDS_WIN_URL}?race_id={race_id}&type=b1"
-        resp = requests.get(url, timeout=10, headers={
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        params = {
+            "race_id": race_id,
+            "type": "1",            # 1 = 単勝・複勝（typeはbXではなく整数）
+            "action": "init",       # 初回ロード
+            "sort": "no",
+            "isPremium": "0",
+            "pid": "api_get_jra_odds",
+            "input": "UTF-8",
+        }
+        resp = requests.get(ODDS_API_URL, params=params, timeout=10, headers={
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": f"https://race.netkeiba.com/race/shutuba.html?race_id={race_id}",
         })
-        resp.encoding = resp.apparent_encoding or "euc-jp"
 
         if resp.status_code != 200:
             return odds_data
 
-        soup = BeautifulSoup(resp.text, "lxml")
+        result = resp.json()
 
-        # 単勝オッズテーブル
-        odds_rows = soup.find_all("tr", class_="")
-        for row in odds_rows:
-            tds = row.find_all("td")
-            if len(tds) >= 3:
-                try:
-                    num_text = tds[0].get_text(strip=True)
-                    odds_text = tds[2].get_text(strip=True)
-                    horse_number = int(num_text)
-                    odds_win = float(odds_text)
-                    odds_data[horse_number] = {
-                        "odds_win": odds_win,
-                        "odds_place": 0.0,
-                    }
-                except (ValueError, IndexError):
-                    continue
+        # data が空ならオッズ未公開
+        raw_data = result.get("data")
+        if not raw_data:
+            return odds_data
+
+        # data は JSON オブジェクト（dict）として返される
+        # 構造: raw_data["odds"]["1"]["01"] = [odds_win, ?, popularity_rank]
+        win_odds_map = raw_data.get("odds", {}).get("1", {})
+
+        for horse_key, row in win_odds_map.items():
+            try:
+                horse_number = int(horse_key)
+                odds_win = float(row[0])
+                popularity = int(row[2]) if len(row) > 2 and row[2] else 0
+                odds_data[horse_number] = {
+                    "odds_win": odds_win,
+                    "odds_place": 0.0,
+                    "popularity": popularity,
+                }
+            except (ValueError, IndexError, TypeError):
+                continue
 
         time.sleep(0.5)
 

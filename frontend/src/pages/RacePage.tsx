@@ -48,6 +48,49 @@ interface RaceSimResult {
   expectedProfit: number | null;
 }
 
+// ---------------------------------------------------------------------------
+// 期待値コメント生成
+// ---------------------------------------------------------------------------
+
+function getEVComment(horse: Horse, horses: Horse[]): string {
+  const ev = horse.expected_value ?? 0;
+
+  // EV水準ラベル
+  let label: string;
+  if (ev >= 0.3)       label = '高EV穴馬';
+  else if (ev >= 0.05) label = '割安';
+  else if (ev >= -0.1) label = '適正水準';
+  else if (ev >= -0.3) label = 'やや割高';
+  else                 label = '人気先行';
+
+  // 補足要因
+  const factors: string[] = [];
+
+  // 馬体重変化
+  const wc = horse.weight_change;
+  if (wc != null) {
+    if (wc >= 2 && wc <= 8)       factors.push('体重増');
+    else if (wc <= -6)             factors.push('体重大幅減');
+    else if (wc < -2)              factors.push('体重減');
+  }
+
+  // 枠番
+  if ((horse.gate_number ?? 0) <= 2)       factors.push('内枠有利');
+  else if ((horse.gate_number ?? 0) >= 7)  factors.push('外枠不利');
+
+  // 人気順 vs モデル順のズレ
+  if (horse.popularity && horse.win_probability != null) {
+    const sorted = [...horses].sort(
+      (a, b) => (b.win_probability ?? 0) - (a.win_probability ?? 0)
+    );
+    const modelRank = sorted.findIndex(h => h.horse_id === horse.horse_id) + 1;
+    if (modelRank < horse.popularity - 2)      factors.push('モデル↑');
+    else if (modelRank > horse.popularity + 2) factors.push('モデル↓');
+  }
+
+  return factors.length > 0 ? `${label}（${factors.join('・')}）` : label;
+}
+
 function buildRaceSimulations(horses: Horse[]): RaceSimResult[] {
   const valid = horses.filter(h => (h.win_probability ?? 0) > 0);
   if (valid.length < 2) return [];
@@ -401,9 +444,11 @@ export default function RacePage() {
                 <th style={thStyle}>騎手</th>
                 <th style={thStyle}>斤量</th>
                 <th style={thStyle}>体重(変化)</th>
+                <th style={thStyle}>人気</th>
                 <th style={thStyle}>単勝オッズ</th>
                 <th style={thStyle}>推定勝率</th>
                 <th style={thStyle}>期待値</th>
+                <th style={thStyle}>評価理由</th>
               </tr>
             </thead>
             <tbody>
@@ -440,6 +485,18 @@ export default function RacePage() {
                         </>
                       ) : '-'}
                     </td>
+                    <td style={{ ...tdStyle, textAlign: 'center' }}>
+                      {horse.popularity ? (
+                        <span style={{
+                          display: 'inline-block', minWidth: '22px', lineHeight: '22px',
+                          borderRadius: '4px', textAlign: 'center', fontSize: '0.8rem', fontWeight: 'bold',
+                          backgroundColor: horse.popularity === 1 ? '#f57f17' : horse.popularity <= 3 ? '#1565c0' : '#616161',
+                          color: '#fff', padding: '0 4px',
+                        }}>
+                          {horse.popularity}
+                        </span>
+                      ) : '-'}
+                    </td>
                     <td style={{ ...tdStyle, fontWeight: 'bold' }}>{horse.odds_win.toFixed(1)} 倍</td>
                     <td style={tdStyle}>
                       {horse.win_probability != null
@@ -450,6 +507,9 @@ export default function RacePage() {
                       {horse.expected_value != null
                         ? (horse.expected_value >= 0 ? '+' : '') + horse.expected_value.toFixed(3)
                         : '-'}
+                    </td>
+                    <td style={{ ...tdStyle, fontSize: '0.78rem', color: '#555', whiteSpace: 'nowrap' }}>
+                      {getEVComment(horse, horses)}
                     </td>
                   </tr>
                 );
